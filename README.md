@@ -1,5 +1,5 @@
 # dynamo-notebooks
-## This repo is deprecated. Please check out our more updated tutorial repos [here](https://github.com/aristoteleo/dynamo-tutorials). Also I suggest dynamo users to go through our readthedocs [pages](https://dynamo-release.readthedocs.io/) to help you get started: this includes the Introduction, 10 minutes to dynamo, API, tutorials on how to analyzing conventional scRNA-seq and tutorials on analyzing both `scNT-seq, scEU-seq` datasets, etc. (those are also in the updated tutorial repo)
+## This repo is deprecated. Please check out our more updated tutorial repos [here](https://github.com/aristoteleo/dynamo-tutorials). Also I suggest dynamo users to go through our readthedocs [pages](https://dynamo-release.readthedocs.io/) to help you get started: this includes the Introduction, 10 minutes to dynamo, API, tutorials on how to analyzing conventional scRNA-seq and tutorials on analyzing both `scNT-seq, scEU-seq` datasets, etc. (those tutorials are also in the updated tutorial repo)
 
 
 Tutorials of Dynamo usage cases and code to reproduce the manuscript. 
