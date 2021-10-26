@@ -1,18 +1,19 @@
-from scanpy.preprocessing._pca import pca
-from scanpy.get import _get_obs_rep, _set_obs_rep
-from scanpy._utils import view_to_actual, check_nonnegative_integers
 from scipy.sparse import issparse
 from typing import Optional, Tuple
 from anndata import AnnData
 import pandas as pd
 import numpy as np
-from scanpy.preprocessing import pca
+
 from typing import Optional, Dict
 from warnings import warn
 import dynamo as dyn
-from dynamo.dynamo_logger import LoggerManager
+from dynamo.dynamo_logger import LoggerManager, main_info
 from dynamo.configuration import DKM
-logg = LoggerManager.main_logger
+
+main_logger = LoggerManager.main_logger
+from dynamo.preprocessing.preprocessor_utils import seurat_get_mean_var
+from dynamo.preprocessing.preprocessor_utils import filter_genes_by_outliers, is_nonnegative_integer_arr
+from dynamo.preprocessing.utils import pca
 import warnings
 from typing import Optional
 
@@ -20,15 +21,6 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp_sparse
 from anndata import AnnData
-
-from scanpy import logging as logg
-from scanpy._settings import settings, Verbosity
-from scanpy._utils import check_nonnegative_integers, view_to_actual
-from scanpy.get import _get_obs_rep
-from scanpy._compat import Literal
-from scanpy.preprocessing._utils import _get_mean_var
-from scanpy.preprocessing._distributed import materialize_as_ndarray
-from scanpy.preprocessing._simple import filter_genes
 
 
 def _highly_variable_pearson_residuals(
@@ -67,12 +59,12 @@ def _highly_variable_pearson_residuals(
         If `batch_key` given, denotes the genes that are highly variable in all batches
     """
 
-    view_to_actual(adata)
-    X = _get_obs_rep(adata, layer=layer)
-    computed_on = layer if layer else 'adata.X'
+    # view_to_actual(adata)
+    X = DKM.select_layer_data(adata, layer)
+    _computed_on_prompt_str = layer if layer else "adata.X"
 
     # Check for raw counts
-    if check_values and (check_nonnegative_integers(X) is False):
+    if check_values and (is_nonnegative_integer_arr(X) is False):
         warnings.warn(
             "`flavor='pearson_residuals'` expects raw count data, but non-integers were found.",
             UserWarning,
@@ -81,7 +73,7 @@ def _highly_variable_pearson_residuals(
     if theta <= 0:
         # TODO: would "underdispersion" with negative theta make sense?
         # then only theta=0 were undefined..
-        raise ValueError('Pearson residuals require theta > 0')
+        raise ValueError("Pearson residuals require theta > 0")
     # prepare clipping
 
     if batch_key is None:
@@ -97,8 +89,8 @@ def _highly_variable_pearson_residuals(
         adata_subset = adata[batch_info == batch]
 
         # Filter out zero genes
-        with settings.verbosity.override(Verbosity.error):
-            nonzero_genes = filter_genes(adata_subset, min_cells=1, inplace=False)[0]
+
+        nonzero_genes = filter_genes_by_outliers(adata_subset, min_cell_s=1)
         adata_subset = adata_subset[:, nonzero_genes]
 
         if layer is not None:
@@ -144,16 +136,14 @@ def _highly_variable_pearson_residuals(
     ranks_residual_var = np.argsort(np.argsort(-residual_gene_vars, axis=1), axis=1)
     ranks_residual_var = ranks_residual_var.astype(np.float32)
     # count in how many batches a genes was among the n_top_genes
-    highly_variable_nbatches = np.sum(
-        (ranks_residual_var < n_top_genes).astype(int), axis=0
-    )
+    highly_variable_nbatches = np.sum((ranks_residual_var < n_top_genes).astype(int), axis=0)
     # set non-top genes within each batch to nan
     ranks_residual_var[ranks_residual_var >= n_top_genes] = np.nan
     ranks_masked_array = np.ma.masked_invalid(ranks_residual_var)
     # Median rank across batches, ignoring batches in which gene was not selected
     medianrank_residual_var = np.ma.median(ranks_masked_array, axis=0).filled(np.nan)
 
-    means, variances = materialize_as_ndarray(_get_mean_var(X))
+    means, variances = seurat_get_mean_var(X)
     df = pd.DataFrame.from_dict(
         dict(
             means=means,
@@ -169,50 +159,44 @@ def _highly_variable_pearson_residuals(
     # Sort genes by how often they selected as hvg within each batch and
     # break ties with median rank of residual variance across batches
     df.sort_values(
-        ['highly_variable_nbatches', 'highly_variable_rank'],
+        ["highly_variable_nbatches", "highly_variable_rank"],
         ascending=[False, True],
-        na_position='last',
+        na_position="last",
         inplace=True,
     )
 
     high_var = np.zeros(df.shape[0])
     high_var[:n_top_genes] = True
-    df['highly_variable'] = high_var.astype(bool)
+    df["highly_variable"] = high_var.astype(bool)
     df = df.loc[adata.var_names, :]
 
     if inplace:
-        adata.uns['hvg'] = {'flavor': 'pearson_residuals', 'computed_on': computed_on}
-        logg.hint(
-            'added\n'
-            '    \'highly_variable\', boolean vector (adata.var)\n'
-            '    \'highly_variable_rank\', float vector (adata.var)\n'
-            '    \'highly_variable_nbatches\', int vector (adata.var)\n'
-            '    \'highly_variable_intersection\', boolean vector (adata.var)\n'
-            '    \'means\', float vector (adata.var)\n'
-            '    \'variances\', float vector (adata.var)\n'
-            '    \'residual_variances\', float vector (adata.var)'
+        adata.uns["hvg"] = {"flavor": "pearson_residuals", "computed_on": _computed_on_prompt_str}
+        main_logger.debug(
+            "added\n"
+            "    'highly_variable', boolean vector (adata.var)\n"
+            "    'highly_variable_rank', float vector (adata.var)\n"
+            "    'highly_variable_nbatches', int vector (adata.var)\n"
+            "    'highly_variable_intersection', boolean vector (adata.var)\n"
+            "    'means', float vector (adata.var)\n"
+            "    'variances', float vector (adata.var)\n"
+            "    'residual_variances', float vector (adata.var)"
         )
-        adata.var['means'] = df['means'].values
-        adata.var['variances'] = df['variances'].values
-        adata.var['residual_variances'] = df['residual_variances']
-        adata.var['highly_variable_rank'] = df['highly_variable_rank'].values
+        adata.var["means"] = df["means"].values
+        adata.var["variances"] = df["variances"].values
+        adata.var["residual_variances"] = df["residual_variances"]
+        adata.var["highly_variable_rank"] = df["highly_variable_rank"].values
         if batch_key is not None:
-            adata.var['highly_variable_nbatches'] = df[
-                'highly_variable_nbatches'
-            ].values
-            adata.var['highly_variable_intersection'] = df[
-                'highly_variable_intersection'
-            ].values
-        adata.var['highly_variable'] = df['highly_variable'].values
+            adata.var["highly_variable_nbatches"] = df["highly_variable_nbatches"].values
+            adata.var["highly_variable_intersection"] = df["highly_variable_intersection"].values
+        adata.var["highly_variable"] = df["highly_variable"].values
 
         if subset:
-            adata._inplace_subset_var(df['highly_variable'].values)
+            adata._inplace_subset_var(df["highly_variable"].values)
 
     else:
         if batch_key is None:
-            df = df.drop(
-                ['highly_variable_nbatches', 'highly_variable_intersection'], axis=1
-            )
+            df = df.drop(["highly_variable_nbatches", "highly_variable_intersection"], axis=1)
         if subset:
             df = df.iloc[df.highly_variable.values, :]
 
@@ -227,7 +211,7 @@ def highly_variable_genes(
     n_top_genes: Optional[int] = None,
     batch_key: Optional[str] = None,
     chunksize: int = 1000,
-    flavor: Literal['pearson_residuals'] = 'pearson_residuals',
+    flavor: str = "pearson_residuals",
     check_values: bool = True,
     layer: Optional[str] = None,
     subset: bool = False,
@@ -316,19 +300,18 @@ def highly_variable_genes(
     Experimental version of `sc.pp.highly_variable_genes()`
     """
 
-    logg.info('extracting highly variable genes')
+    main_logger.info("extracting highly variable genes")
 
     if not isinstance(adata, AnnData):
         raise ValueError(
-            '`pp.highly_variable_genes` expects an `AnnData` argument, '
-            'pass `inplace=False` if you want to return a `pd.DataFrame`.'
+            "`pp.highly_variable_genes` expects an `AnnData` argument, "
+            "pass `inplace=False` if you want to return a `pd.DataFrame`."
         )
 
-    if flavor == 'pearson_residuals':
+    if flavor == "pearson_residuals":
         if n_top_genes is None:
             raise ValueError(
-                "`pp.highly_variable_genes` requires the argument `n_top_genes`"
-                " for `flavor='pearson_residuals'`"
+                "`pp.highly_variable_genes` requires the argument `n_top_genes`" " for `flavor='pearson_residuals'`"
             )
         return _highly_variable_pearson_residuals(
             adata,
@@ -343,6 +326,7 @@ def highly_variable_genes(
             inplace=inplace,
         )
 
+
 def _pearson_residuals(X, theta, clip, check_values, copy=False):
 
     X = X.copy() if copy else X
@@ -351,7 +335,7 @@ def _pearson_residuals(X, theta, clip, check_values, copy=False):
     if theta <= 0:
         # TODO: would "underdispersion" with negative theta make sense?
         # then only theta=0 were undefined..
-        raise ValueError('Pearson residuals require theta > 0')
+        raise ValueError("Pearson residuals require theta > 0")
     # prepare clipping
     if clip is None:
         n = X.shape[0]
@@ -359,7 +343,7 @@ def _pearson_residuals(X, theta, clip, check_values, copy=False):
     if clip < 0:
         raise ValueError("Pearson residuals require `clip>=0` or `clip=None`.")
 
-    if check_values and not check_nonnegative_integers(X):
+    if check_values and not is_nonnegative_integer_arr(X):
         warn(
             "`normalize_pearson_residuals()` expects raw count data, but non-integers were found.",
             UserWarning,
@@ -434,8 +418,7 @@ def normalize_pearson_residuals(
 
     if copy:
         if not inplace:
-            raise ValueError(
-                "`copy=True` cannot be used with `inplace=False`.")
+            raise ValueError("`copy=True` cannot be used with `inplace=False`.")
         adata = adata.copy()
 
     # view_to_actual(adata)
@@ -443,21 +426,23 @@ def normalize_pearson_residuals(
     if layer is None:
         layer = DKM.X_LAYER
     X = DKM.select_layer_data(adata, layer=layer)
-    computed_on = layer if layer else 'adata.X'
+    computed_on = layer if layer else "adata.X"
 
-    msg = f'computing analytic Pearson residuals on {computed_on}'
-    start = logg.info(msg)
+    msg = f"computing analytic Pearson residuals on {computed_on}"
+    main_logger.info(msg)
+    main_logger.log_time()
 
     residuals = _pearson_residuals(X, theta, clip, check_values, copy=~inplace)
     settings_dict = dict(theta=theta, clip=clip, computed_on=computed_on)
 
     if inplace:
-        _set_obs_rep(adata, residuals, layer=layer)
-        adata.uns['pearson_residuals_normalization'] = settings_dict
+        main_logger.info("replace layer %s with pearson residuals." % (layer))
+        DKM.set_layer_data(adata, layer, residuals)
+        adata.uns["pearson_residuals_normalization"] = settings_dict
     else:
         results_dict = dict(X=residuals, **settings_dict)
 
-    logg.info('    finished ({time_passed})', time=start)
+    main_logger.finish_progress(progress_name="pearson residual normalization")
 
     if copy:
         return adata
@@ -537,42 +522,35 @@ def normalize_pearson_residuals_pca(
     """
 
     # check if HVG selection is there if user wants to use it
-    if use_highly_variable and 'highly_variable' not in adata.var_keys():
+    if use_highly_variable and "highly_variable" not in adata.var_keys():
         raise ValueError(
-            'You passed `use_highly_variable=True`, but no HVG selection was found (`highly_variable` missing in `adata.var_keys()`.'
+            "You passed `use_highly_variable=True`, but no HVG selection was found (`highly_variable` missing in `adata.var_keys()`."
         )
 
     # default behavior: if there is a HVG selection, we will use it
-    if use_highly_variable is None and 'highly_variable' in adata.var_keys():
+    if use_highly_variable is None and "highly_variable" in adata.var_keys():
         use_highly_variable = True
 
     if use_highly_variable:
-        adata_sub = adata[:, adata.var['highly_variable']].copy()
-        adata_pca = AnnData(
-            adata_sub.X.copy(), obs=adata_sub.obs[[]], var=adata_sub.var[[]]
-        )
+        adata_sub = adata[:, adata.var["highly_variable"]].copy()
+        adata_pca = AnnData(adata_sub.X.copy(), obs=adata_sub.obs[[]], var=adata_sub.var[[]])
     else:
-        adata_pca = AnnData(
-            adata.X.copy(), obs=adata.obs[[]], var=adata.var[[]])
+        adata_pca = AnnData(adata.X.copy(), obs=adata.obs[[]], var=adata.var[[]])
 
-    normalize_pearson_residuals(
-        adata_pca, theta=theta, clip=clip, check_values=check_values
-    )
-    pca(adata_pca, n_comps=n_comps, random_state=random_state, **kwargs_pca)
+    normalize_pearson_residuals(adata_pca, theta=theta, clip=clip, check_values=check_values)
+    pca(adata_pca, n_pca_components=n_comps, pca_key="X_pca", **kwargs_pca)
 
     if inplace:
-        norm_settings = adata_pca.uns['pearson_residuals_normalization']
-        norm_dict = dict(
-            **norm_settings, pearson_residuals_df=adata_pca.to_df())
+        norm_settings = adata_pca.uns["pearson_residuals_normalization"]
+        norm_dict = dict(**norm_settings, pearson_residuals_df=adata_pca.to_df())
         if use_highly_variable:
-            adata.varm['PCs'] = np.zeros(shape=(adata.n_vars, n_comps))
-            adata.varm['PCs'][adata.var['highly_variable']
-                              ] = adata_pca.varm['PCs']
+            adata.varm["PCs"] = np.zeros(shape=(adata.n_vars, n_comps))
+            adata.varm["PCs"][adata.var["highly_variable"]] = adata_pca.varm["PCs"]
         else:
-            adata.varm['PCs'] = adata_pca.varm['PCs']
-        adata.uns['pca'] = adata_pca.uns['pca']
-        adata.uns['pearson_residuals_normalization'] = norm_dict
-        adata.obsm['X_pca'] = adata_pca.obsm['X_pca']
+            adata.varm["PCs"] = adata_pca.varm["PCs"]
+        adata.uns["pca"] = adata_pca.uns["pca"]
+        adata.uns["pearson_residuals_normalization"] = norm_dict
+        adata.obsm["X_pca"] = adata_pca.obsm["X_pca"]
         return None
     else:
         return adata_pca
@@ -580,6 +558,7 @@ def normalize_pearson_residuals_pca(
 
 def recipe_pearson_residuals(
     adata: AnnData,
+    layer: str = None,
     theta: float = 100,
     clip: Optional[float] = None,
     n_top_genes: int = 1000,
@@ -676,9 +655,11 @@ def recipe_pearson_residuals(
     `.uns['pca']['variance']`
          Explained variance, equivalent to the eigenvalues of the covariance matrix.
     """
-
+    if layer is None:
+        layer = DKM.X_LAYER
+    main_info("Gene selection and normalization on layer: " + layer)
     hvg_args = dict(
-        flavor='pearson_residuals',
+        flavor="pearson_residuals",
         n_top_genes=n_top_genes,
         batch_key=batch_key,
         theta=theta,
@@ -690,28 +671,25 @@ def recipe_pearson_residuals(
     if inplace:
         highly_variable_genes(adata, **hvg_args, inplace=True)
         # TODO: are these copies needed?
-        adata_pca = adata[:, adata.var['highly_variable']].copy()
+        adata_pca = adata[:, adata.var["highly_variable"]].copy()
     else:
         hvg = highly_variable_genes(adata, **hvg_args, inplace=False)
         # TODO: are these copies needed?
-        adata_pca = adata[:, hvg['highly_variable']].copy()
+        adata_pca = adata[:, hvg["highly_variable"]].copy()
 
-    normalize_pearson_residuals(
-        adata_pca, theta=theta, clip=clip, check_values=check_values
-    )
-    pca(adata_pca, n_comps=n_comps, random_state=random_state, **kwargs_pca)
+    normalize_pearson_residuals(adata_pca, layer=layer, theta=theta, clip=clip, check_values=check_values)
+    pca(adata_pca, n_pca_components=n_comps, pca_key="X_pca", **kwargs_pca)
 
     if inplace:
-        normalization_param = adata_pca.uns['pearson_residuals_normalization']
-        normalization_dict = dict(
-            **normalization_param, pearson_residuals_df=adata_pca.to_df()
-        )
+        normalization_param = adata_pca.uns["pearson_residuals_normalization"]
+        normalization_dict = dict(**normalization_param, pearson_residuals_df=adata_pca.to_df())
 
-        adata.uns['pca'] = adata_pca.uns['pca']
-        adata.varm['PCs'] = np.zeros(shape=(adata.n_vars, n_comps))
-        adata.varm['PCs'][adata.var['highly_variable']] = adata_pca.varm['PCs']
-        adata.uns['pearson_residuals_normalization'] = normalization_dict
-        adata.obsm['X_pca'] = adata_pca.obsm['X_pca']
+        # adata.uns['pca'] = adata_pca.uns['pca']
+        adata.uns["PCs"] = np.zeros(shape=(adata.n_vars, n_comps))
+        adata.uns["PCs"][adata.var["highly_variable"]] = adata_pca.uns["PCs"]
+        adata.uns["pearson_residuals_normalization"] = normalization_dict
+        print(adata_pca)
+        adata.obsm["X_pca"] = adata_pca.obsm["X_pca"]
         return None
     else:
         return adata_pca, hvg
