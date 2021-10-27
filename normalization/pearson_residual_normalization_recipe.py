@@ -99,7 +99,7 @@ def _highly_variable_pearson_residuals(
             n = X_batch.shape[0]
             clip = np.sqrt(n)
         if clip < 0:
-            raise ValueError("Pearson residuals require `clip>=0` or `clip=None`.")
+            raise ValueError("Pearson residuals normalization requires `clip>=0` or `clip=None`.")
 
         if sp_sparse.issparse(X_batch):
             sums_genes = np.sum(X_batch, axis=0)
@@ -367,7 +367,7 @@ def compute_pearson_residuals(X, theta, clip, check_values, copy=False):
     return residuals
 
 
-def normalize_pearson_residuals(
+def _normalize_single_layer_pearson_residuals(
     adata: AnnData,
     *,
     theta: float = 100,
@@ -421,7 +421,6 @@ def normalize_pearson_residuals(
     if layer is None:
         layer = DKM.X_LAYER
     pp_pearson_store_key = DKM.gen_layer_pearson_residual_key(layer)
-    print("pp pearson store key:", pp_pearson_store_key)
     X = DKM.select_layer_data(adata, layer=layer)
 
     msg = "applying Pearson residuals to %s" % (layer)
@@ -449,7 +448,7 @@ def normalize_layers_pearson_residuals(
 ):
 
     for layer in layers:
-        normalize_pearson_residuals(adata, layer=layer, **normalize_pearson_residual_args)
+        _normalize_single_layer_pearson_residuals(adata, layer=layer, **normalize_pearson_residual_args)
 
 
 def select_genes_by_pearson_residual(
