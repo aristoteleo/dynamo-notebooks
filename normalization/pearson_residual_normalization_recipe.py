@@ -1,3 +1,9 @@
+import scipy.sparse as sp_sparse
+from typing import Optional
+import warnings
+from dynamo.preprocessing.utils import pca
+from dynamo.preprocessing.preprocessor_utils import filter_genes_by_outliers, is_nonnegative_integer_arr
+from dynamo.preprocessing.preprocessor_utils import seurat_get_mean_var
 from scipy.sparse import issparse
 from typing import Optional, Tuple
 from anndata import AnnData
@@ -11,16 +17,6 @@ from dynamo.dynamo_logger import LoggerManager, main_info
 from dynamo.configuration import DKM
 
 main_logger = LoggerManager.main_logger
-from dynamo.preprocessing.preprocessor_utils import seurat_get_mean_var
-from dynamo.preprocessing.preprocessor_utils import filter_genes_by_outliers, is_nonnegative_integer_arr
-from dynamo.preprocessing.utils import pca
-import warnings
-from typing import Optional
-
-import numpy as np
-import pandas as pd
-import scipy.sparse as sp_sparse
-from anndata import AnnData
 
 
 def _highly_variable_pearson_residuals(
@@ -424,6 +420,8 @@ def normalize_pearson_residuals(
 
     if layer is None:
         layer = DKM.X_LAYER
+    pp_pearson_store_key = DKM.gen_layer_pearson_residual_key(layer)
+    print("pp pearson store key:", pp_pearson_store_key)
     X = DKM.select_layer_data(adata, layer=layer)
 
     msg = "applying Pearson residuals to %s" % (layer)
@@ -434,9 +432,9 @@ def normalize_pearson_residuals(
     pearson_residual_params_dict = dict(theta=theta, clip=clip, layer=layer)
 
     if not copy:
-        main_logger.info("replacing layer %s with pearson residual normalized data." % (layer))
+        main_logger.info("replacing layer <%s> with pearson residual normalized data." % (layer))
         DKM.set_layer_data(adata, layer, residuals)
-        adata.uns["pp"][DKM.UNS_PP_PEARSON_RESIDUAL_NORMALIZATION] = pearson_residual_params_dict
+        adata.uns["pp"][pp_pearson_store_key] = pearson_residual_params_dict
     else:
         results_dict = dict(X=residuals, **pearson_residual_params_dict)
 
@@ -444,6 +442,14 @@ def normalize_pearson_residuals(
 
     if copy:
         return results_dict
+
+
+def normalize_layers_pearson_residuals(
+    adata: AnnData, layers: list = ["spliced", "unspliced"], **normalize_pearson_residual_args
+):
+
+    for layer in layers:
+        normalize_pearson_residuals(adata, layer=layer, **normalize_pearson_residual_args)
 
 
 def select_genes_by_pearson_residual(
@@ -519,17 +525,10 @@ def select_genes_by_pearson_residual(
 
     if inplace:
         compute_highly_variable_genes(adata, **hvg_params, inplace=True)
-        adata_pca = adata[:, adata.var[DKM.VAR_GENE_HIGHLY_VARIABLE_KEY]].copy()
     else:
         hvg = compute_highly_variable_genes(adata, **hvg_params, inplace=False)
-        adata_pca = adata[:, hvg[DKM.VAR_GENE_HIGHLY_VARIABLE_KEY]].copy()
-
-    normalize_pearson_residuals(adata_pca, layer=layer, theta=theta, clip=clip, check_values=check_values)
 
     if inplace:
-        normalization_param = adata_pca.uns["pp"][DKM.UNS_PP_PEARSON_RESIDUAL_NORMALIZATION]
-        normalization_dict = dict(**normalization_param, pearson_residuals_df=adata_pca.to_df())
-        adata.uns["pp"][DKM.UNS_PP_PEARSON_RESIDUAL_NORMALIZATION] = normalization_dict
         return None
     else:
-        return adata_pca, hvg
+        return adata, hvg
