@@ -36,7 +36,7 @@ def _highly_variable_pearson_residuals(
     inplace: bool = True,
 ) -> Optional[pd.DataFrame]:
     """\
-    See `scanpy.experimental.pp.highly_variable_genes`.
+    Compute highly variable genes based on pearson residuals.
 
     Returns
     -------
@@ -167,11 +167,11 @@ def _highly_variable_pearson_residuals(
 
     high_var = np.zeros(df.shape[0])
     high_var[:n_top_genes] = True
-    df["highly_variable"] = high_var.astype(bool)
+    df[DKM.VAR_GENE_HIGHLY_VARIABLE_KEY] = high_var.astype(bool)
     df = df.loc[adata.var_names, :]
 
     if inplace:
-        adata.uns["hvg"] = {"flavor": "pearson_residuals", "computed_on": _computed_on_prompt_str}
+        adata.uns[DKM.UNS_PP_KEY]["hvg"] = {"flavor": "pearson_residuals", "computed_on": _computed_on_prompt_str}
         main_logger.debug(
             "added\n"
             "    'highly_variable', boolean vector (adata.var)\n"
@@ -189,10 +189,13 @@ def _highly_variable_pearson_residuals(
         if batch_key is not None:
             adata.var["highly_variable_nbatches"] = df["highly_variable_nbatches"].values
             adata.var["highly_variable_intersection"] = df["highly_variable_intersection"].values
-        adata.var["highly_variable"] = df["highly_variable"].values
+        adata.var[DKM.VAR_GENE_HIGHLY_VARIABLE_KEY] = df[DKM.VAR_GENE_HIGHLY_VARIABLE_KEY].values
+        adata.var[DKM.VAR_USE_FOR_PCA] = df[
+            DKM.VAR_GENE_HIGHLY_VARIABLE_KEY
+        ].values  # set use_for_pca for down stream analysis in dynamo
 
         if subset:
-            adata._inplace_subset_var(df["highly_variable"].values)
+            adata._inplace_subset_var(df[DKM.VAR_GENE_HIGHLY_VARIABLE_KEY].values)
 
     else:
         if batch_key is None:
@@ -203,7 +206,7 @@ def _highly_variable_pearson_residuals(
         return df
 
 
-def highly_variable_genes(
+def compute_highly_variable_genes(
     adata: AnnData,
     *,
     theta: float = 100,
@@ -211,7 +214,7 @@ def highly_variable_genes(
     n_top_genes: Optional[int] = None,
     batch_key: Optional[str] = None,
     chunksize: int = 1000,
-    flavor: str = "pearson_residuals",
+    recipe: str = "pearson_residuals",
     check_values: bool = True,
     layer: Optional[str] = None,
     subset: bool = False,
@@ -308,7 +311,7 @@ def highly_variable_genes(
             "pass `inplace=False` if you want to return a `pd.DataFrame`."
         )
 
-    if flavor == "pearson_residuals":
+    if recipe == "pearson_residuals":
         if n_top_genes is None:
             raise ValueError(
                 "`pp.highly_variable_genes` requires the argument `n_top_genes`" " for `flavor='pearson_residuals'`"
@@ -327,7 +330,7 @@ def highly_variable_genes(
         )
 
 
-def _pearson_residuals(X, theta, clip, check_values, copy=False):
+def compute_pearson_residuals(X, theta, clip, check_values, copy=False):
 
     X = X.copy() if copy else X
 
@@ -376,7 +379,6 @@ def normalize_pearson_residuals(
     check_values: bool = True,
     layer: Optional[str] = None,
     copy: bool = False,
-    inplace: bool = True,
 ) -> Optional[Dict[str, np.ndarray]]:
     """\
     Applies analytic Pearson residual normalization, based on [Lause21]_.
@@ -406,19 +408,12 @@ def normalize_pearson_residuals(
         Layer to normalize instead of `X`. If `None`, `X` is normalized.
     copy
         Whether to modify copied input object. Not compatible with `inplace=False`.
-    inplace
-        Whether to update `adata` or return dictionary with normalized copies
-        of `adata.X` and `adata.layers`.
     Returns
     -------
-    Returns dictionary with Pearson residuals and settings
-    or updates `adata` with normalized version of the original
-    `adata.X` and `adata.layers`, depending on `inplace`.
+    Returns dictionary with Pearson residuals and settings, or None based on copy
     """
 
     if copy:
-        if not inplace:
-            raise ValueError("`copy=True` cannot be used with `inplace=False`.")
         adata = adata.copy()
 
     # view_to_actual(adata)
@@ -426,137 +421,28 @@ def normalize_pearson_residuals(
     if layer is None:
         layer = DKM.X_LAYER
     X = DKM.select_layer_data(adata, layer=layer)
-    computed_on = layer if layer else "adata.X"
 
-    msg = f"computing analytic Pearson residuals on {computed_on}"
+    msg = "computing analytic Pearson residuals on %s" % (layer)
     main_logger.info(msg)
     main_logger.log_time()
 
-    residuals = _pearson_residuals(X, theta, clip, check_values, copy=~inplace)
-    settings_dict = dict(theta=theta, clip=clip, computed_on=computed_on)
+    residuals = compute_pearson_residuals(X, theta, clip, check_values, copy=copy)
+    pearson_residual_params_dict = dict(theta=theta, clip=clip, layer=layer)
 
-    if inplace:
-        main_logger.info("replace layer %s with pearson residuals." % (layer))
+    if not copy:
+        main_logger.info("replacing layer %s with pearson residual normalized data." % (layer))
         DKM.set_layer_data(adata, layer, residuals)
-        adata.uns["pearson_residuals_normalization"] = settings_dict
+        adata.uns["pp"][DKM.UNS_PP_PEARSON_RESIDUAL_NORMALIZATION] = pearson_residual_params_dict
     else:
-        results_dict = dict(X=residuals, **settings_dict)
+        results_dict = dict(X=residuals, **pearson_residual_params_dict)
 
     main_logger.finish_progress(progress_name="pearson residual normalization")
 
     if copy:
-        return adata
-    elif not inplace:
         return results_dict
 
 
-def normalize_pearson_residuals_pca(
-    adata: AnnData,
-    theta: float = 100,
-    clip: Optional[float] = None,
-    n_comps: Optional[int] = 50,
-    random_state: Optional[float] = 0,
-    kwargs_pca: Optional[dict] = {},
-    use_highly_variable: Optional[bool] = None,
-    check_values: bool = True,
-    inplace: bool = True,
-) -> Optional[pd.DataFrame]:
-    """\
-    Applies analytic Pearson residual normalization and PCA, based on [Lause21]_.
-    The residuals are based on a negative binomial offset model with overdispersion
-    `theta` shared across genes. By default, residuals are clipped to sqrt(n),
-    overdispersion `theta=100` is used, and PCA is run with 50 components.
-    Operates on the subset of highly variable genes in `adata.var['highly_variable']`
-    by default. Expects raw count input.
-    Params
-    ------
-    adata
-        The annotated data matrix of shape `n_obs` × `n_vars`.
-        Rows correspond to cells and columns to genes.
-    theta
-        The negative binomial overdispersion parameter theta for Pearson residuals.
-        Higher values correspond to less overdispersion (var = mean + mean^2/theta),
-        and `theta=np.Inf` corresponds to a Poisson model.
-    clip
-        Determines if and how residuals are clipped:
-            * If `None`, residuals are clipped to the interval [-sqrt(n), sqrt(n)], \
-            where n is the number of cells in the dataset (default behavior).
-            * If any scalar c, residuals are clipped to the interval [-c, c]. Set \
-            `clip=np.Inf` for no clipping.
-    n_comps
-        Number of principal components to compute for the PCA step.
-    random_state
-        Change to use different initial states for the optimization of the PCA step.
-    kwargs_pca
-        Dictionary of further keyword arguments passed on to `scanpy.pp.pca()`.
-    use_highly_variable
-        Whether to use the gene selection in `adata.var['highly_variable']` to subset
-        the data before normalizing (default) or proceed on the full dataset.
-    check_values
-        Check if counts in selected layer are integers. A Warning is returned if set to
-        True.
-    inplace
-        Whether to place results in `adata` or return them.
-    Returns
-    -------
-    If `inplace=False`, returns the Pearson residual-based PCA results
-    (`adata_pca`).
-    If `inplace=True`, updates `adata` with the following fields:
-    `.uns['pearson_residuals_normalization']['pearson_residuals_df']`
-         The hvg-subset, normalized by Pearson residuals
-    `.uns['pearson_residuals_normalization']['theta']`
-         The used value of the overdisperion parameter theta
-    `.uns['pearson_residuals_normalization']['clip']`
-         The used value of the clipping parameter
-    `.obsm['X_pca']`
-        PCA representation of data after gene selection (if applicable) and Pearson
-        residual normalization.
-    `.varm['PCs']`
-         The principal components containing the loadings. When `inplace=True` and
-         `use_highly_variable=True`, this will contain empty rows for the genes not
-         selected.
-    `.uns['pca']['variance_ratio']`
-         Ratio of explained variance.
-    `.uns['pca']['variance']`
-         Explained variance, equivalent to the eigenvalues of the covariance matrix.
-    """
-
-    # check if HVG selection is there if user wants to use it
-    if use_highly_variable and "highly_variable" not in adata.var_keys():
-        raise ValueError(
-            "You passed `use_highly_variable=True`, but no HVG selection was found (`highly_variable` missing in `adata.var_keys()`."
-        )
-
-    # default behavior: if there is a HVG selection, we will use it
-    if use_highly_variable is None and "highly_variable" in adata.var_keys():
-        use_highly_variable = True
-
-    if use_highly_variable:
-        adata_sub = adata[:, adata.var["highly_variable"]].copy()
-        adata_pca = AnnData(adata_sub.X.copy(), obs=adata_sub.obs[[]], var=adata_sub.var[[]])
-    else:
-        adata_pca = AnnData(adata.X.copy(), obs=adata.obs[[]], var=adata.var[[]])
-
-    normalize_pearson_residuals(adata_pca, theta=theta, clip=clip, check_values=check_values)
-    pca(adata_pca, n_pca_components=n_comps, pca_key="X_pca", **kwargs_pca)
-
-    if inplace:
-        norm_settings = adata_pca.uns["pearson_residuals_normalization"]
-        norm_dict = dict(**norm_settings, pearson_residuals_df=adata_pca.to_df())
-        if use_highly_variable:
-            adata.varm["PCs"] = np.zeros(shape=(adata.n_vars, n_comps))
-            adata.varm["PCs"][adata.var["highly_variable"]] = adata_pca.varm["PCs"]
-        else:
-            adata.varm["PCs"] = adata_pca.varm["PCs"]
-        adata.uns["pca"] = adata_pca.uns["pca"]
-        adata.uns["pearson_residuals_normalization"] = norm_dict
-        adata.obsm["X_pca"] = adata_pca.obsm["X_pca"]
-        return None
-    else:
-        return adata_pca
-
-
-def recipe_pearson_residuals(
+def select_genes_by_pearson_residual(
     adata: AnnData,
     layer: str = None,
     theta: float = 100,
@@ -564,17 +450,15 @@ def recipe_pearson_residuals(
     n_top_genes: int = 1000,
     batch_key: Optional[str] = None,
     chunksize: int = 1000,
-    n_comps: Optional[int] = 50,
-    random_state: Optional[float] = 0,
-    kwargs_pca: dict = {},
+    n_pca_components: Optional[int] = 50,
     check_values: bool = True,
     inplace: bool = True,
 ) -> Optional[Tuple[pd.DataFrame, pd.DataFrame]]:
     """\
     Gene selection and normalization based on [Lause21]_.
     Applies gene selection based on Pearson residuals. On the resulting subset,
-    Pearson residual normalization and PCA are performed.
     Expects raw count input.
+
     Params
     ------
     adata
@@ -602,12 +486,8 @@ def recipe_pearson_residuals(
         This dertermines how many genes are processed at once while computing
         the Pearson residual variance. Choosing a smaller value will reduce
         the required memory.
-    n_comps
+    n_pca_components
         Number of principal components to compute in the PCA step.
-    random_state
-        Change to use different initial states for the optimization in the PCA step.
-    kwargs_pca
-        Dictionary of further keyword arguments passed on to `scanpy.pp.pca()`.
     check_values
         Check if counts in selected layer are integers. A Warning is returned if set to
         True.
@@ -615,51 +495,16 @@ def recipe_pearson_residuals(
         Whether to place results in `adata` or return them.
     Returns
     -------
-    If `inplace=False`, separately returns the gene selection results (`hvg`)
-    and Pearson residual-based PCA results (`adata_pca`). If `inplace=True`,
-    updates `adata` with the following fields for gene selection results:
-    `.var['highly_variable']` : bool
-        boolean indicator of highly-variable genes.
-    `.var['means']` : float
-        means per gene.
-    `.var['variances']` : float
-        variances per gene.
-    `.var['residual_variances']` : float
-        Pearson residual variance per gene. Averaged in the case of multiple
-        batches.
-    `.var['highly_variable_rank']` : float
-        Rank of the gene according to residual variance, median rank in the
-        case of multiple batches.
-    `.var['highly_variable_nbatches']` : int
-        If batch_key is given, this denotes in how many batches genes are
-        detected as HVG.
-    `.var['highly_variable_intersection']` : bool
-        If batch_key is given, this denotes the genes that are highly variable
-        in all batches.
-    …and the following fields for Pearson residual-based PCA results and
-    normalization settings:
-    `.uns['pearson_residuals_normalization']['pearson_residuals_df']`
-         The hvg-subset, normalized by Pearson residuals.
-    `.uns['pearson_residuals_normalization']['theta']`
-         The used value of the overdisperion parameter theta.
-    `.uns['pearson_residuals_normalization']['clip']`
-         The used value of the clipping parameter.
-    `.obsm['X_pca']`
-        PCA representation of data after gene selection and Pearson residual
-        normalization.
-    `.varm['PCs']`
-         The principal components containing the loadings. When `inplace=True` this
-         will contain empty rows for the genes not selected during HVG selection.
-    `.uns['pca']['variance_ratio']`
-         Ratio of explained variance.
-    `.uns['pca']['variance']`
-         Explained variance, equivalent to the eigenvalues of the covariance matrix.
     """
     if layer is None:
         layer = DKM.X_LAYER
     main_info("Gene selection and normalization on layer: " + layer)
-    hvg_args = dict(
-        flavor="pearson_residuals",
+    if DKM.UNS_PP_KEY not in adata.uns:
+        DKM.init_uns_pp_namespace(adata)
+
+    # highly variable genes calculation args
+    hvg_params = dict(
+        recipe="pearson_residuals",
         n_top_genes=n_top_genes,
         batch_key=batch_key,
         theta=theta,
@@ -669,27 +514,18 @@ def recipe_pearson_residuals(
     )
 
     if inplace:
-        highly_variable_genes(adata, **hvg_args, inplace=True)
-        # TODO: are these copies needed?
-        adata_pca = adata[:, adata.var["highly_variable"]].copy()
+        compute_highly_variable_genes(adata, **hvg_params, inplace=True)
+        adata_pca = adata[:, adata.var[DKM.VAR_GENE_HIGHLY_VARIABLE_KEY]].copy()
     else:
-        hvg = highly_variable_genes(adata, **hvg_args, inplace=False)
-        # TODO: are these copies needed?
-        adata_pca = adata[:, hvg["highly_variable"]].copy()
+        hvg = compute_highly_variable_genes(adata, **hvg_params, inplace=False)
+        adata_pca = adata[:, hvg[DKM.VAR_GENE_HIGHLY_VARIABLE_KEY]].copy()
 
     normalize_pearson_residuals(adata_pca, layer=layer, theta=theta, clip=clip, check_values=check_values)
-    pca(adata_pca, n_pca_components=n_comps, pca_key="X_pca", **kwargs_pca)
 
     if inplace:
-        normalization_param = adata_pca.uns["pearson_residuals_normalization"]
+        normalization_param = adata_pca.uns["pp"][DKM.UNS_PP_PEARSON_RESIDUAL_NORMALIZATION]
         normalization_dict = dict(**normalization_param, pearson_residuals_df=adata_pca.to_df())
-
-        # adata.uns['pca'] = adata_pca.uns['pca']
-        adata.uns["PCs"] = np.zeros(shape=(adata.n_vars, n_comps))
-        adata.uns["PCs"][adata.var["highly_variable"]] = adata_pca.uns["PCs"]
-        adata.uns["pearson_residuals_normalization"] = normalization_dict
-        print(adata_pca)
-        adata.obsm["X_pca"] = adata_pca.obsm["X_pca"]
+        adata.uns["pp"][DKM.UNS_PP_PEARSON_RESIDUAL_NORMALIZATION] = normalization_dict
         return None
     else:
         return adata_pca, hvg
