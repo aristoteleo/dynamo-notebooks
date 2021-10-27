@@ -378,6 +378,7 @@ def normalize_pearson_residuals(
     clip: Optional[float] = None,
     check_values: bool = True,
     layer: Optional[str] = None,
+    select_genes_key: np.array = None,
     copy: bool = False,
 ) -> Optional[Dict[str, np.ndarray]]:
     """\
@@ -415,14 +416,17 @@ def normalize_pearson_residuals(
 
     if copy:
         adata = adata.copy()
-
     # view_to_actual(adata)
+
+    if select_genes_key:
+        main_info("normalize with selected genes.")
+        adata = adata[:, adata.var[select_genes_key]]
 
     if layer is None:
         layer = DKM.X_LAYER
     X = DKM.select_layer_data(adata, layer=layer)
 
-    msg = "computing analytic Pearson residuals on %s" % (layer)
+    msg = "applying Pearson residuals to %s" % (layer)
     main_logger.info(msg)
     main_logger.log_time()
 
