@@ -2,6 +2,7 @@
 # vscode related
 .vscode/
 dynamo/.vscode/
+**/scanpy*/**
 
 ._.DS_Store
 ~/
