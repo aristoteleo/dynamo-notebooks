@@ -1,7 +1,7 @@
 import scipy.sparse as sp_sparse
 from typing import Optional
 import warnings
-from dynamo.preprocessing.utils import pca
+from dynamo.preprocessing.utils import pca_monocle
 from dynamo.preprocessing.preprocessor_utils import filter_genes_by_outliers, is_nonnegative_integer_arr
 from dynamo.preprocessing.preprocessor_utils import seurat_get_mean_var
 from scipy.sparse import issparse
@@ -15,6 +15,8 @@ from warnings import warn
 import dynamo as dyn
 from dynamo.dynamo_logger import LoggerManager, main_info
 from dynamo.configuration import DKM
+from scanpy.preprocessing._simple import filter_genes
+from benchmark_utils import *
 
 main_logger = LoggerManager.main_logger
 
@@ -79,14 +81,15 @@ def _highly_variable_pearson_residuals(
     n_batches = len(np.unique(batch_info))
 
     # Get pearson residuals for each batch separately
-    residual_gene_vars = []
+    residual_gene_vars_by_batch = []
     for batch in np.unique(batch_info):
 
         adata_subset = adata[batch_info == batch]
 
         # Filter out zero genes
 
-        nonzero_genes = filter_genes_by_outliers(adata_subset, min_cell_s=1)
+        nonzero_genes = filter_genes_by_outliers(adata_subset, min_cell_s=1, min_cell_u=0, min_cell_p=0, shared_count=None)
+        # nonzero_genes = filter_genes(adata_subset, min_cells=1, inplace=False)[0]
         adata_subset = adata_subset[:, nonzero_genes]
 
         if layer is not None:
@@ -123,13 +126,13 @@ def _highly_variable_pearson_residuals(
         # Add 0 values for genes that were filtered out
         unmasked_residual_gene_var = np.zeros(len(nonzero_genes))
         unmasked_residual_gene_var[nonzero_genes] = residual_gene_var
-        residual_gene_vars.append(unmasked_residual_gene_var.reshape(1, -1))
+        residual_gene_vars_by_batch.append(unmasked_residual_gene_var.reshape(1, -1))
 
-    residual_gene_vars = np.concatenate(residual_gene_vars, axis=0)
+    residual_gene_vars_by_batch = np.concatenate(residual_gene_vars_by_batch, axis=0)
 
     # Get rank per gene within each batch
     # argsort twice gives ranks, small rank means most variable
-    ranks_residual_var = np.argsort(np.argsort(-residual_gene_vars, axis=1), axis=1)
+    ranks_residual_var = np.argsort(np.argsort(-residual_gene_vars_by_batch, axis=1), axis=1)
     ranks_residual_var = ranks_residual_var.astype(np.float32)
     # count in how many batches a genes was among the n_top_genes
     highly_variable_nbatches = np.sum((ranks_residual_var < n_top_genes).astype(int), axis=0)
@@ -144,7 +147,8 @@ def _highly_variable_pearson_residuals(
         dict(
             means=means,
             variances=variances,
-            residual_variances=np.mean(residual_gene_vars, axis=0),
+            # mean of each batch
+            residual_variances=np.mean(residual_gene_vars_by_batch, axis=0),
             highly_variable_rank=medianrank_residual_var,
             highly_variable_nbatches=highly_variable_nbatches.astype(np.int64),
             highly_variable_intersection=highly_variable_nbatches == n_batches,
@@ -374,7 +378,7 @@ def _normalize_single_layer_pearson_residuals(
     clip: Optional[float] = None,
     check_values: bool = True,
     layer: Optional[str] = None,
-    select_genes_key: np.array = None,
+    var_select_genes_key: np.array = None,
     copy: bool = False,
 ) -> Optional[Dict[str, np.ndarray]]:
     """\
@@ -414,16 +418,23 @@ def _normalize_single_layer_pearson_residuals(
         adata = adata.copy()
     # view_to_actual(adata)
 
-    if select_genes_key:
-        main_info("normalize with selected genes.")
-        adata = adata[:, adata.var[select_genes_key]]
+    # if select_genes_key:
+    #     main_info("normalize selected genes...")
+    #     adata = adata[:, adata.var[select_genes_key]]
 
     if layer is None:
         layer = DKM.X_LAYER
     pp_pearson_store_key = DKM.gen_layer_pearson_residual_key(layer)
-    X = DKM.select_layer_data(adata, layer=layer)
 
-    msg = "applying Pearson residuals to %s" % (layer)
+    selected_genes_bools = np.ones(adata.n_vars, dtype=bool)
+    if var_select_genes_key:
+        selected_genes_bools = adata.var[var_select_genes_key]
+
+    adata_selected_genes = adata[:, selected_genes_bools]
+
+    X = DKM.select_layer_data(adata_selected_genes, layer=layer)
+
+    msg = "applying Pearson residuals to layer <%s>" % (layer)
     main_logger.info(msg)
     main_logger.log_time()
 
@@ -432,7 +443,7 @@ def _normalize_single_layer_pearson_residuals(
 
     if not copy:
         main_logger.info("replacing layer <%s> with pearson residual normalized data." % (layer))
-        DKM.set_layer_data(adata, layer, residuals)
+        DKM.set_layer_data(adata, layer, residuals, selected_genes_bools)
         adata.uns["pp"][pp_pearson_store_key] = pearson_residual_params_dict
     else:
         results_dict = dict(X=residuals, **pearson_residual_params_dict)
@@ -440,15 +451,14 @@ def _normalize_single_layer_pearson_residuals(
     main_logger.finish_progress(progress_name="pearson residual normalization")
 
     if copy:
-        return results_dict
+        return adata
 
 
 def normalize_layers_pearson_residuals(
-    adata: AnnData, layers: list = ["spliced", "unspliced"], **normalize_pearson_residual_args
+    adata: AnnData, layers: list = ["X", "spliced", "unspliced"], selected_genes_key="use_for_pca", **normalize_pearson_residual_args
 ):
-
     for layer in layers:
-        _normalize_single_layer_pearson_residuals(adata, layer=layer, **normalize_pearson_residual_args)
+        _normalize_single_layer_pearson_residuals(adata, layer=layer, var_select_genes_key=selected_genes_key, **normalize_pearson_residual_args)
 
 
 def select_genes_by_pearson_residual(
@@ -456,10 +466,9 @@ def select_genes_by_pearson_residual(
     layer: str = None,
     theta: float = 100,
     clip: Optional[float] = None,
-    n_top_genes: int = 1000,
+    n_top_genes: int = 2000,
     batch_key: Optional[str] = None,
     chunksize: int = 1000,
-    n_pca_components: Optional[int] = 50,
     check_values: bool = True,
     inplace: bool = True,
 ) -> Optional[Tuple[pd.DataFrame, pd.DataFrame]]:
@@ -507,7 +516,7 @@ def select_genes_by_pearson_residual(
     """
     if layer is None:
         layer = DKM.X_LAYER
-    main_info("Gene selection and normalization on layer: " + layer)
+    main_info("gene selection on layer: " + layer)
     if DKM.UNS_PP_KEY not in adata.uns:
         DKM.init_uns_pp_namespace(adata)
 
