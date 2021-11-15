@@ -1,6 +1,6 @@
 library(Seurat)
 library(ggplot2)
-library(sctransform)a
+library(sctransform)
 library(SeuratData)
 library(SeuratDisk)
 library(Matrix)
@@ -14,6 +14,7 @@ rownames(counts) <- cell_names[, "index"]
 var_names = read.csv("../data/var_names.csv")
 colnames(counts) <- var_names[, "X0"]
 counts <- counts[, colSums(counts) != 0]
+counts <- t(counts)
 
 pbmc <- CreateSeuratObject(counts = counts)
 
@@ -29,6 +30,8 @@ pbmc <- PercentageFeatureSet(pbmc, pattern = "^MT-", col.name = "percent.mt")
 # pbmc <- SCTransform(pbmc, vars.to.regress = "percent.mt", verbose = FALSE)
 pbmc <- SCTransform(pbmc, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
 pbmc <- RunPCA(pbmc, npcs=50, verbose = FALSE)
+write.table(pbmc[["pca"]]@cell.embeddings, "X_pca.csv", sep=",")
+
 pbmc <- RunUMAP(pbmc, dims = 1:50, verbose = FALSE)
 pbmc <- FindNeighbors(pbmc, dims = 1:50, verbose = FALSE)
 pbmc <- FindClusters(pbmc, verbose = FALSE)
