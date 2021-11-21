@@ -1,8 +1,10 @@
-library(Seurat)
+# library(Seurat)
+library(devtools)
+load_all('D:\\seurat')
 library(ggplot2)
-library(sctransform)
-library(SeuratData)
-library(SeuratDisk)
+# library(sctransform)
+# library(SeuratData)
+# library(SeuratDisk)
 library(Matrix)
 library(glmGamPoi)
 
@@ -29,6 +31,7 @@ pbmc <- PercentageFeatureSet(pbmc, pattern = "^MT-", col.name = "percent.mt")
 # run sctransform
 # # percent nt ver 
 pbmc <- SCTransform(pbmc, method = "poisson", vars.to.regress = "percent.mt", verbose = FALSE)
+# pbmc <- SCTransform(pbmc, method = "qpoisson", vars.to.regress = "percent.mt", verbose = FALSE)
 # pbmc <- SCTransform(pbmc, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
 pbmc <- RunPCA(pbmc, npcs=50, verbose = FALSE)
 pbmc@assays$SCT@SCTModel.list$model1@feature.attributes
