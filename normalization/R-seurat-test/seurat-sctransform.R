@@ -1,5 +1,6 @@
 # library(Seurat)
 library(devtools)
+# change to your seurat local folder for debugging, or comment out the following line.
 load_all('D:\\seurat')
 library(ggplot2)
 # library(sctransform)
@@ -8,8 +9,11 @@ library(ggplot2)
 library(Matrix)
 library(glmGamPoi)
 
+# Following read not working, may work in future package versions
 # Convert("../data/zebrafish.h5ad", dest = "h5seurat", overwrite = FALSE)
 # pbmc <- LoadH5Seurat("../data/zebrafish.h5seurat")
+
+# Read counts directly and construct single cell objects
 counts <- readMM("../data/counts.mtx")
 cell_names = read.csv("../data/cell_names.csv")
 rownames(counts) <- cell_names[, "index"]
@@ -30,10 +34,11 @@ pbmc <- PercentageFeatureSet(pbmc, pattern = "^MT-", col.name = "percent.mt")
 
 # run sctransform
 # # percent nt ver 
-pbmc <- SCTransform(pbmc, method = "poisson", vars.to.regress = "percent.mt", verbose = FALSE)
+pbmc <- SCTransform(pbmc, method = "poisson", vars.to.regress = "percent.mt", verbose = TRUE, do.correct.umi = FALSE)
+# pbmc <- SCTransform(pbmc, method = "poisson", vars.to.regress = "percent.mt", verbose = TRUE)
 # pbmc <- SCTransform(pbmc, method = "qpoisson", vars.to.regress = "percent.mt", verbose = FALSE)
 # pbmc <- SCTransform(pbmc, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
-pbmc <- RunPCA(pbmc, npcs=50, verbose = FALSE)
+pbmc <- RunPCA(pbmc, npcs=50, verbose = TRUE)
 pbmc@assays$SCT@SCTModel.list$model1@feature.attributes
 write.table(pbmc[["pca"]]@cell.embeddings, "X_pca.csv", sep=",")
 
