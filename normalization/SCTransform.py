@@ -192,6 +192,7 @@ def SCTransform(adata, min_cells=5, gmean_eps=1, n_genes=2000, n_cells=None, bin
     model_pars["theta"] = x
     dispersion_par = np.log10(1 + 10 ** genes_log_gmean_step1 / model_pars["theta"].values.flatten())
 
+    model_pars_theta = model_pars["theta"]
     model_pars = model_pars.iloc[:, model_pars.columns != "theta"].copy()
     model_pars["dispersion"] = dispersion_par
 
@@ -233,7 +234,6 @@ def SCTransform(adata, min_cells=5, gmean_eps=1, n_genes=2000, n_cells=None, bin
 
     d = X.data
     x, y = X.nonzero()
-
     mud = np.exp(full_model_pars.values[:, 0][y] + full_model_pars.values[:, 1][y] * cell_attrs["log_umi"].values[x])
     vard = mud + mud ** 2 / full_model_pars["theta"].values.flatten()[y]
 
@@ -262,6 +262,7 @@ def SCTransform(adata, min_cells=5, gmean_eps=1, n_genes=2000, n_cells=None, bin
 
         for c in model_pars.columns:
             adata.var[c + "_step1_sct"] = model_pars[c]
+        adata.var["model_pars_theta_step1"] = model_pars_theta
 
         z = pd.Series(index=gene_names, data=np.zeros(gene_names.size, dtype="int"))
         z[gene_names[genes_step1]] = 1
