@@ -9,7 +9,7 @@ import warnings
 warnings.filterwarnings('ignore')
 from dynamo.preprocessing import Preprocessor
 from anndata import AnnData
-
+import time
 
 def get_clean_organoid_data():
     adata = dyn.sample_data.scEU_seq_organoid()
@@ -51,7 +51,12 @@ def benchmark_after_pp(adata: AnnData, color: str, file_prefix="pp"):
 
 def benchmark_all_recipes(data_generator: Callable, color, save_dir="./", tkey=None):
     recipes = ["monocle", "seurat", "sctransform", "pearson_residuals"]
+    recipe2time = {}
     for recipe in recipes:
         adata = data_generator()
+        start_time = time.time()
         recipe_benchmark(adata, recipe=recipe, tkey=tkey)
+        duration = time.time() - start_time
+        recipe2time[recipe] = duration
         benchmark_after_pp(adata, color=color, file_prefix="pancreas")
+    return recipe2time
