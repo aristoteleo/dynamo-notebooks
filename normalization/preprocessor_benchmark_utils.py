@@ -49,6 +49,12 @@ def get_clean_chromaffin_data():
     return adata
 
 
+def get_clean_hgForebrainGlutamatergic_data():
+    adata = dyn.sample_data.hgForebrainGlutamatergic()
+    adata.obs["time"] = 1
+    return adata
+
+
 def recipe_benchmark(adata: AnnData, recipe: str, tkey=None):
     preprocessor = Preprocessor()
     preprocessor.preprocess_adata(adata, recipe=recipe, tkey=tkey)
