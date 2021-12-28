@@ -80,7 +80,7 @@ def benchmark_all_recipes(data_generator: Callable,
                             dynamics_kwargs = {}, 
                           save_dir="./", tkey=None, dataset_name="pancreas"):
 
-    do_dynamics_benchmarks = ["monocle", "seurat", "pearson_residuals"]
+    do_dynamics_benchmarks = ["monocle", "seurat", "pearson_residuals", "sctransform"]
     recipe2time = {}
     for recipe in recipes:
         adata = data_generator()
