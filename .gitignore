@@ -1,0 +1,62 @@
+*h5ad
+
+*csv
+*.html
+# vscode related
+.vscode/
+dynamo/.vscode/
+**/scanpy*/**
+
+._.DS_Store
+~/
+
+venv/
+archive/
+cache/
+data/
+figs/
+figures/
+scripts/
+benchmarking/
+debug/
+integral_seq/
+env/
+
+load_model_from_*
+dynamo.egg-info/
+dynamo_release.egg-info/
+
+# Python / Byte-compiled / optimized / DLL
+__pycache__/
+*.py[cod]
+*.so
+.cache
+*.h5ad
+
+# OS or Editor files and folders
+.DS_Store
+Thumbs.db
+.ipynb_checkpoints/
+.directory
+/.idea/
+
+# Docs build
+docs/build
+docs/source/dynamo*
+docs/source/_autosummary
+
+# always-ignore directories
+/build/
+/dist/
+
+.coverage
+test.py
+
+# Docker related:
+node_modules/
+package-lock.json
+public/*.js
+
+# Docker related:
+debug/numbers_in_dynamo_first_revision.py
+.Rproj.user
